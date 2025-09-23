@@ -1,0 +1,192 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  # Backend Tests
+  backend-tests:
+    runs-on: ubuntu-latest
+    
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: lixnet_sms_test
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.1'
+        extensions: mbstring, dom, fileinfo, mysql, gd, curl, zip, bcmath
+        coverage: xdebug
+
+    - name: Cache Composer packages
+      id: composer-cache
+      uses: actions/cache@v3
+      with:
+        path: backend/vendor
+        key: ${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-php-
+
+    - name: Install dependencies
+      working-directory: ./backend
+      run: composer install --prefer-dist --no-progress
+
+    - name: Copy environment file
+      working-directory: ./backend
+      run: cp .env.example .env
+
+    - name: Generate application key
+      working-directory: ./backend
+      run: php artisan key:generate
+
+    - name: Configure database
+      working-directory: ./backend
+      run: |
+        echo "DB_CONNECTION=mysql" >> .env
+        echo "DB_HOST=127.0.0.1" >> .env
+        echo "DB_PORT=3306" >> .env
+        echo "DB_DATABASE=lixnet_sms_test" >> .env
+        echo "DB_USERNAME=root" >> .env
+        echo "DB_PASSWORD=password" >> .env
+
+    - name: Run database migrations
+      working-directory: ./backend
+      run: php artisan migrate --force
+
+    - name: Execute tests
+      working-directory: ./backend
+      run: php artisan test --coverage --min=80
+
+    - name: Archive backend artifact
+      run: |
+        cd backend
+        zip -r ../backend-build.zip . -x ".git/*" ".env" "vendor/*" "node_modules/*"
+
+    - name: Upload backend artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: backend-build
+        path: backend-build.zip
+
+  # Frontend Tests
+  frontend-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install dependencies
+      working-directory: ./frontend
+      run: npm install --legacy-peer-deps
+
+    - name: Run tests
+      working-directory: ./frontend
+      run: npm run test:ci
+
+    - name: Build application
+      working-directory: ./frontend
+      run: npm run build
+
+    - name: Upload frontend build artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: frontend-build
+        path: frontend/build
+
+  # Deploy to Staging
+  deploy-staging:
+    needs: [backend-tests, frontend-tests]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    
+    steps:
+    - name: Download backend build
+      uses: actions/download-artifact@v3
+      with:
+        name: backend-build
+        path: backend
+
+    - name: Download frontend build
+      uses: actions/download-artifact@v3
+      with:
+        name: frontend-build
+        path: frontend/build
+
+    - name: Deploy to Staging
+      run: |
+        echo "Deploying to staging environment..."
+        # Add deployment script for staging here
+
+  # Deploy to Production
+  deploy-production:
+    needs: [backend-tests, frontend-tests]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+    - name: Download backend build
+      uses: actions/download-artifact@v3
+      with:
+        name: backend-build
+        path: backend
+
+    - name: Download frontend build
+      uses: actions/download-artifact@v3
+      with:
+        name: frontend-build
+        path: frontend/build
+
+    - name: Deploy to Production
+      run: |
+        echo "Deploying to production environment..."
+        # Add deployment script for production here
+
+  # Quality Gate
+  quality-gate:
+    needs: [backend-tests, frontend-tests]
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Code Quality Check
+      run: echo "Running code quality checks..."
+      # Add static analysis, linting, etc.
+
+  # Notifications
+  notify:
+    needs: [deploy-staging, deploy-production]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+    - name: Send notification
+      run: echo "Sending notification of build status..."
+      # Add notification script (e.g., Slack, email)
+
+  # Validate Pipeline
+  validate-pipeline:
+    needs: [quality-gate, notify]
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Validate pipeline completion
+      run: echo "Pipeline validation successful!"
